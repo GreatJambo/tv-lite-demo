@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>TradingView-lite Demo</title>
+  <!-- TradingView 官方开源图表（本地） -->
+  <script src="/node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <!-- technicalindicators 指标库（本地） -->
+  <script src="/node_modules/technicalindicators/dist/browser.js"></script>
+  <style>
+    body { margin: 0; background: #0f172a; color: #e5e7eb; font-family: sans-serif; }
+    .chart { height: 80vh; }
+    .subchart { height: 200px; }
+    /* UI layout similar to TV */
+    .toolbar-left { position: fixed; left: 10px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
+    .tool-btn { width: 36px; height: 36px; border-radius: 8px; border: 1px solid #475569; background: #1f2937; color: #e5e7eb; cursor: pointer; display: grid; place-items: center; font-size: 12px; }
+    .tool-btn.active { background: #334155; }
+    .topbar { position: fixed; left: 50%; top: 8px; transform: translateX(-50%); display: flex; gap: 8px; z-index: 1000; align-items: center; }
+    .top-btn { padding: 6px 10px; border-radius: 6px; border: 1px solid #475569; background: #1f2937; color: #e5e7eb; cursor: pointer; font-size: 12px; }
+    .top-input, .top-select { height: 30px; border-radius: 6px; border: 1px solid #475569; background: #0b1220; color: #e5e7eb; padding: 0 8px; font-size: 12px; }
+    .panel { position: fixed; top: 48px; left: 50%; transform: translateX(-50%); background: #1f2937; border: 1px solid #475569; border-radius: 8px; padding: 8px 10px; z-index: 1000; color: #e5e7eb; font-size: 12px; display: none; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
+    .panel label { display: flex; align-items: center; gap: 6px; margin: 4px 0; cursor: pointer; }
+  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="description" content="TradingView-lite 示例，含K线、SMA/EMA、RSI、MACD" />
+  <meta name="color-scheme" content="dark light" />
+</head>
+<body>
+  <h2 style="text-align:center">📈 </h2>
+  <div id="debug" style="position:fixed;left:8px;top:8px;color:#e5e7eb;background:rgba(0,0,0,.35);padding:4px 6px;border-radius:4px;font:12px/1.4 monospace;z-index:9999;pointer-events:none;display:none"></div>
+  <div class="topbar">
+    <label style="opacity:.75;margin-right:4px;">源</label>
+    <select id="sourceSelect" class="top-select">
+      <option value="auto" selected>Auto</option>
+      <option value="binance">Binance</option>
+      <option value="binanceus">Binance US</option>
+      <option value="yahoo">Yahoo</option>
+      <option value="polygon">Polygon</option>
+      <option value="twelvedata">TwelveData</option>
+    </select>
+    <label style="opacity:.75;margin-left:8px;margin-right:4px;">交易对/代码</label>
+    <input id="symbolInput" class="top-input" value="BTCUSDT" style="width:120px" />
+    <select id="presetSelect" class="top-select">
+      <option value="">预设</option>
+      <option value="BINANCE:BTCUSDT|1d">BTCUSDT 1d</option>
+      <option value="BINANCE:ETHUSDT|1h">ETHUSDT 1h</option>
+      <option value="YF:AAPL|1d">AAPL 1d</option>
+      <option value="YF:TSLA|1d">TSLA 1d</option>
+    </select>
+    <select id="intervalSelect" class="top-select">
+      <option value="1d" selected>1d</option>
+      <option value="4h">4h</option>
+      <option value="1h">1h</option>
+      <option value="15m">15m</option>
+      <option value="5m">5m</option>
+      <option value="1m">1m</option>
+    </select>
+    <button id="loadBtn" class="top-btn">加载</button>
+    <label style="opacity:.75;margin-left:8px;margin-right:4px;">右侧留白</label>
+    <input id="padInput" class="top-input" type="number" value="2" min="0" max="50" style="width:56px" />
+    <button id="btnIndicators" class="top-btn">指标</button>
+  </div>
+  <div id="indicatorPanel" class="panel"></div>
+  <div id="chart" class="chart"></div>
+
+<script>
+  // 全局错误收集，直接输出到左上角 debug
+  (function(){
+    window.onerror = function(message, source, lineno, colno, error){
+      var el = document.getElementById('debug');
+      var text = ['ERROR:', message, '@', source+':'+lineno+':'+colno].join(' ');
+      if (el) el.textContent += (el.textContent?'\n':'') + text;
+      try { console.error(message, source, lineno, colno, error); } catch(_) {}
+    };
+  })();
+
+  // ---------- 示例数据（随机生成 OHLC） ----------
+  const DEBUG_ENABLED = /[?&]debug=1/.test(location.search);
+  function logDebug(...args){
+    try { console.log(...args); } catch(_){}
+    var el = document.getElementById('debug');
+    if (el && DEBUG_ENABLED) {
+      if (el.style.display === 'none') el.style.display = 'block';
+      el.textContent = (el.textContent ? el.textContent + '\n' : '') + args.map(String).join(' ');
+    }
+  }
+
+  function genOHLC(n = 200, start = 100) {
+    // 使用 UTCTimestamp（秒）作为 time，确保与 v5 兼容
+    const out = [];
+    const startSec = Math.floor(Date.now() / 1000) - n * 86400;
+    let price = start;
+    for (let i = 0; i < n; i++) {
+      const t = startSec + i * 86400; // 单位：秒
+      const open = price;
+      const close = open + (Math.random() - 0.5) * 4;
+      const high = Math.max(open, close) + Math.random() * 2;
+      const low = Math.min(open, close) - Math.random() * 2;
+      const volBase = 1_000_000; // 基础成交量
+      const volume = Math.round(volBase * (0.5 + Math.random()));
+      out.push({ time: t, open, high, low, close, volume });
+      price = close;
+    }
+    return out;
+  }
+  logDebug('script start');
+  let ohlc = genOHLC();
+  let closes = ohlc.map(d => d.close);
+  let volumes = ohlc.map(d => d.volume || 0);
+
+  // ---------- 主图 (K线) ----------
+  const container = document.getElementById('chart');
+  logDebug('container size:', container.clientWidth, container.clientHeight);
+  logDebug('LC global type:', typeof window.LightweightCharts);
+  if (!window.LightweightCharts) {
+    logDebug('LightweightCharts 未定义，脚本可能未加载');
+  }
+  let chart;
+  try {
+    chart = LightweightCharts.createChart(container, {
+      layout: { background: { color: '#0f172a' }, textColor: '#eee' },
+      grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+      crosshair: { mode: 0 },
+      rightPriceScale: { borderColor: '#334155' },
+    timeScale: { borderColor: '#334155', timeVisible: true, secondsVisible: false, fixRightEdge: true, rightOffset: 2 },
+    });
+    logDebug('chart created');
+  } catch (e) {
+    logDebug('createChart error:', e && e.message ? e.message : e);
+    throw e;
+  }
+  const candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries);
+  candleSeries.setData(ohlc);
+  // 确保时间轴包含数据
+  requestAnimationFrame(() => { chart.timeScale().fitContent(); logDebug('fitContent done'); });
+
+  // 限制向右滚动：最多保留一定的右侧留白（单位：bar）
+  let rightPadBars = 2;
+  let clampLock = false;
+  function clampRightLimit(range) {
+    if (clampLock) return;
+    const ts = chart.timeScale();
+    const r = range || ts.getVisibleLogicalRange();
+    if (!r) return;
+    if (!ohlc || ohlc.length === 0) return;
+    const maxTo = (ohlc.length - 1) + rightPadBars;
+    if (r.to > maxTo) {
+      clampLock = true;
+      const width = r.to - r.from;
+      const newTo = maxTo;
+      const newFrom = newTo - width;
+      ts.setVisibleLogicalRange({ from: newFrom, to: newTo });
+      clampLock = false;
+    }
+  }
+  chart.timeScale().subscribeVisibleLogicalRangeChange(clampRightLimit);
+
+  // ---------- 斐波那契回撤（简易工具） ----------
+  // 点击两次以选择起点和终点，在这两个时间范围内绘制 Fib 水平线
+  // Left toolbar
+  const leftBar = document.createElement('div');
+  leftBar.className = 'toolbar-left';
+  leftBar.innerHTML = `
+    <button id="fibToggle" class="tool-btn" title="Fib">Fib</button>
+    <button id="fibExtend" class="tool-btn active" title="延长">⇔</button>
+    <button id="fibClear" class="tool-btn" title="清除">✕</button>
+  `;
+  document.body.appendChild(leftBar);
+
+  let fibActive = false;
+  let fibExtend = true; // 是否让水平线延伸到全图
+  let fibAnchor = null; // { time, price }
+  let fibSeries = []; // created line series for levels
+  let fibPriceLines = []; // price lines for axis labels
+  const fibMarkers = LightweightCharts.createSeriesMarkers(candleSeries, [], { zOrder: 'top' });
+
+  function clearFib() {
+    fibSeries.forEach(s => chart.removeSeries(s));
+    fibSeries = [];
+    fibPriceLines.forEach(pl => candleSeries.removePriceLine(pl));
+    fibPriceLines = [];
+    fibMarkers.setMarkers([]);
+    fibAnchor = null;
+  }
+
+  document.getElementById('fibToggle').onclick = () => {
+    fibActive = !fibActive;
+    document.getElementById('fibToggle').classList.toggle('active', fibActive);
+  };
+  document.getElementById('fibExtend').onclick = () => {
+    fibExtend = !fibExtend;
+    document.getElementById('fibExtend').classList.toggle('active', fibExtend);
+    // 即时作用于现有 price lines
+    fibPriceLines.forEach(pl => pl.applyOptions({ lineVisible: fibExtend }));
+  };
+  document.getElementById('fibClear').onclick = () => clearFib();
+
+  function addFibLevels(a, b) {
+    // times must be in ascending order for rendering
+    const t1 = a.time <= b.time ? a.time : b.time;
+    const t2 = a.time <= b.time ? b.time : a.time;
+    const p1 = a.price; // price at first anchor
+    const p2 = b.price; // price at second anchor
+    const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+    // calculate using B + (A-B)*L
+    const color = '#94a3b8';
+    const boldColor = '#f59e0b';
+    levels.forEach((L) => {
+      const v = p2 + (p1 - p2) * L;
+      const lvColor = (L === 0.618 || L === 0.382) ? boldColor : color;
+      // segment line within selected range
+      const s = chart.addSeries(LightweightCharts.LineSeries, {
+        color: lvColor,
+        lineWidth: (L === 0.618 || L === 0.382) ? 2 : 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      s.setData([
+        { time: t1, value: v },
+        { time: t2, value: v },
+      ]);
+      fibSeries.push(s);
+      // axis label with ratio + price
+      const pl = candleSeries.createPriceLine({
+        price: v,
+        color: lvColor,
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        lineWidth: 1,
+        lineVisible: fibExtend, // 延长：画整条水平线跨越全图
+        axisLabelVisible: true,
+        title: `${(L*100).toFixed(1)}% ${v.toFixed(2)}`,
+        axisLabelColor: lvColor,
+        axisLabelTextColor: '#0f172a',
+      });
+      fibPriceLines.push(pl);
+    });
+  }
+
+  chart.subscribeClick((param) => {
+    if (!fibActive || !param?.point || param.time === undefined) return;
+    const y = param.point.y;
+    const price = candleSeries.coordinateToPrice(y);
+    if (price == null) return;
+    if (!fibAnchor) {
+      fibAnchor = { time: param.time, price };
+      logDebug('Fib 起点', JSON.stringify(fibAnchor));
+      fibMarkers.setMarkers([
+        { time: fibAnchor.time, price: fibAnchor.price, position: 'atPriceMiddle', shape: 'circle', color: '#f59e0b', text: 'A', size: 2 },
+      ]);
+    } else {
+      const a = fibAnchor; // preserve before clearing
+      clearFib();
+      const b = { time: param.time, price };
+      addFibLevels(a, b);
+      fibMarkers.setMarkers([
+        { time: a.time, price: a.price, position: 'atPriceMiddle', shape: 'circle', color: '#f59e0b', text: 'A', size: 2 },
+        { time: b.time, price: b.price, position: 'atPriceMiddle', shape: 'circle', color: '#22d3ee', text: 'B', size: 2 },
+      ]);
+      fibAnchor = null;
+      logDebug('Fib 终点', JSON.stringify(b), '已绘制');
+    }
+  });
+
+  // 额外：收盘价线，便于确认时间轴与数据是否被渲染
+  const closeLine = chart.addSeries(LightweightCharts.LineSeries, { color: '#7aa2f7', lineWidth: 1 });
+  closeLine.setData(ohlc.map(d => ({ time: d.time, value: d.close })));
+
+  // ---------- SMA / EMA ----------
+  let times = ohlc.map(d => d.time);
+  // ---- 计算均线（本地实现，避免依赖问题） ----
+  function sma(values, p){
+    const out=[]; let sum=0; for(let i=0;i<values.length;i++){ sum+=values[i]; if(i>=p) sum-=values[i-p]; if(i>=p-1) out.push(sum/p); }
+    return out;
+  }
+  function ema(values, p){
+    const k=2/(p+1); const out=[]; let prev=0; for(let i=0;i<values.length;i++){ if(i===0){ prev=values[i]; out.push(prev); } else { prev = values[i]*k + prev*(1-k); out.push(prev); } } return out.slice(p-1);
+  }
+  let sma20 = sma(closes, 20);
+  let ema50 = ema(closes, 50);
+  const smaSeries = chart.addSeries(LightweightCharts.LineSeries, { color: 'orange', lineWidth: 2 });
+  const emaSeries = chart.addSeries(LightweightCharts.LineSeries, { color: 'cyan', lineWidth: 2 });
+  smaSeries.setData(sma20.map((v,i)=>({ time: times[i+20-1], value: v })));
+  emaSeries.setData(ema50.map((v,i)=>({ time: times[i+50-1], value: v })));
+
+  // 简易图例（右上角）用于开关 SMA/EMA
+  // Indicators dropdown on top bar
+  const panel = document.getElementById('indicatorPanel');
+  const btnInd = document.getElementById('btnIndicators');
+  panel.innerHTML = `
+    <label><input id="smaToggle" type="checkbox" checked> <span style="color:orange">SMA20</span></label>
+    <label><input id="emaToggle" type="checkbox" checked> <span style="color:cyan">EMA50</span></label>
+    <label><input id="volToggle" type="checkbox"> <span>Volume</span></label>
+    <hr style="border:none;border-top:1px solid #475569;margin:6px 0" />
+    <label><input id="rsiToggle" type="checkbox"> <span>RSI(14)</span></label>
+    <label><input id="macdToggle" type="checkbox"> <span>MACD(12,26,9)</span></label>
+  `;
+  btnInd.addEventListener('click',()=>{ panel.style.display = panel.style.display==='none' || panel.style.display==='' ? 'block' : 'none'; });
+  document.addEventListener('click',(ev)=>{ if(!panel.contains(ev.target) && ev.target!==btnInd) panel.style.display='none'; });
+  document.getElementById('smaToggle').addEventListener('change', (e)=> smaSeries.applyOptions({ visible: e.target.checked }));
+  document.getElementById('emaToggle').addEventListener('change', (e)=> emaSeries.applyOptions({ visible: e.target.checked }));
+  document.getElementById('volToggle').addEventListener('change', (e)=> e.target.checked ? addVOL() : removeVOL());
+
+  // -------- 数据加载：Binance K线 --------
+  async function loadViaProxy(source, symbol, interval, limit=800){
+    const url = `/api/klines?source=${encodeURIComponent(source)}&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(`Proxy API ${res.status}`);
+    return await res.json();
+  }
+
+  function applyData(newOhlc, preserve=false){
+    const keepRange = preserve ? chart.timeScale().getVisibleLogicalRange() : null;
+    ohlc = newOhlc;
+    times = ohlc.map(d=>d.time);
+    closes = ohlc.map(d=>d.close);
+    volumes = ohlc.map(d=>d.volume||0);
+    candleSeries.setData(ohlc);
+    closeLine.setData(ohlc.map(d=>({time:d.time, value:d.close})));
+    // MA/EMA
+    sma20 = sma(closes,20);
+    ema50 = ema(closes,50);
+    smaSeries.setData(sma20.map((v,i)=>({time:times[i+20-1], value:v})));
+    emaSeries.setData(ema50.map((v,i)=>({time:times[i+50-1], value:v})));
+    // Volume
+    if (volPane && volSeries) {
+      const volData = ohlc.map(d=>({ time:d.time, value:d.volume, color:(d.close>=d.open)?'rgba(34, 197, 94, 0.6)':'rgba(239, 68, 68, 0.6)' }));
+      volSeries.setData(volData);
+    }
+    // RSI/MACD
+    if (rsiPane && rsiSeries) {
+      let rsiVals;
+      try { rsiVals = (window.technicalindicators ? technicalindicators.RSI.calculate({period:14, values: closes}) : null); } catch(_) { rsiVals = null; }
+      if (!rsiVals) {
+        const p=14; rsiVals=[]; let gains=0,losses=0; for(let i=1;i<closes.length;i++){ const ch=closes[i]-closes[i-1]; gains+=Math.max(ch,0); losses+=Math.max(-ch,0); if(i>=p){ const prevCh=closes[i-p+1]-closes[i-p]; gains-=Math.max(prevCh,0); losses-=Math.max(-prevCh,0);} if(i>=p) { const rs=losses===0?100:(gains/p)/(losses/p); rsiVals.push(100-100/(1+rs)); }}
+      }
+      rsiSeries.setData(rsiVals.map((v,i)=>({ time: times[i+14-1], value: v })));
+    }
+    if (macdPane && macdLine && sigLine && histSeries) {
+      let macd;
+      try { macd = (window.technicalindicators ? technicalindicators.MACD.calculate({ values: closes, fastPeriod:12, slowPeriod:26, signalPeriod:9, SimpleMAOscillator:false, SimpleMASignal:false}) : null); } catch(_) { macd=null; }
+      if (!macd) {
+        function emaN(vals,p){ const k=2/(p+1); let e=vals[0]; const out=[e]; for(let i=1;i<vals.length;i++){ e=vals[i]*k + e*(1-k); out.push(e);} return out; }
+        const ema12=emaN(closes,12), ema26=emaN(closes,26).slice(0,ema12.length);
+        const macdLineArr = ema12.map((v,i)=> v - ema26[i]).slice(26-1);
+        const k=2/(9+1); let e=macdLineArr[0]; const signalArr=[e]; for(let i=1;i<macdLineArr.length;i++){ e=macdLineArr[i]*k + e*(1-k); signalArr.push(e);} 
+        macd = macdLineArr.map((v,i)=>({ MACD:v, signal: signalArr[i], histogram: v - signalArr[i] }));
+      }
+      macdLine.setData(macd.map((d,i)=>({ time: times[i+26-1], value: d.MACD })));
+      sigLine.setData(macd.map((d,i)=>({ time: times[i+26-1], value: d.signal })));
+      histSeries.setData(macd.map((d,i)=>({ time: times[i+26-1], value: d.histogram })));
+    }
+    // 清除 Fib，避免与新数据错配
+    clearFib();
+    // 视图窗口：如果已有范围则保持；否则默认显示最近一段窗口而不是全量，避免视觉上跳到较早年份
+    if (keepRange) {
+      chart.timeScale().setVisibleLogicalRange(keepRange);
+    } else {
+      const last = ohlc.length - 1;
+      const interval = document.getElementById('intervalSelect').value || '1d';
+      const defaultWindow = (interval === '1m') ? 300 : (interval === '5m') ? 300 : (interval === '15m') ? 300 : (interval === '1h') ? 400 : (interval === '4h') ? 400 : 220; // 约等于最近几个月
+      const from = Math.max(0, last - defaultWindow);
+      chart.timeScale().setVisibleLogicalRange({ from, to: last + rightPadBars });
+    }
+    // 再次夹紧右侧边界
+    clampRightLimit();
+  }
+
+  document.getElementById('presetSelect').addEventListener('change', (e)=>{
+    const v = e.target.value;
+    if (!v) return;
+    const [ns, iv] = v.split('|');
+    const [provider, sym] = ns.split(':');
+    document.getElementById('sourceSelect').value = (provider === 'BINANCE') ? 'binance' : (provider === 'YF' ? 'yahoo' : 'binance');
+    document.getElementById('symbolInput').value = sym;
+    document.getElementById('intervalSelect').value = iv;
+  });
+
+  let ws = null;
+  function closeWS(){ if(ws){ try{ ws.close(); }catch(_){} ws=null; } }
+  function startBinanceWS(symbol, interval){
+    closeWS();
+    const streamInterval = interval.toLowerCase();
+    const streamSymbol = symbol.toLowerCase();
+    const url = `wss://stream.binance.com:9443/ws/${streamSymbol}@kline_${streamInterval}`;
+    try {
+      ws = new WebSocket(url);
+      ws.onmessage = (ev)=>{
+        try {
+          const msg = JSON.parse(ev.data);
+          if (!msg.k) return;
+          const k = msg.k; // kline payload
+          const bar = { time: Math.floor(k.t/1000), open:+k.o, high:+k.h, low:+k.l, close:+k.c, volume:+k.v };
+          // update last or append
+          const last = ohlc[ohlc.length-1];
+          if (last && last.time === bar.time) {
+            ohlc[ohlc.length-1] = bar;
+          } else if (!last || bar.time > last.time) {
+            ohlc.push(bar);
+          }
+          applyData(ohlc, true);
+        } catch(_) {}
+      };
+    } catch (_) {}
+  }
+
+  document.getElementById('loadBtn').addEventListener('click', async ()=>{
+    const source = document.getElementById('sourceSelect').value;
+    const symbol = (document.getElementById('symbolInput').value || 'BTCUSDT').toUpperCase();
+    const interval = document.getElementById('intervalSelect').value || '1d';
+    try {
+      const data = await loadViaProxy(source, symbol, interval, 800);
+      applyData(data, false);
+      if (source === 'binance') startBinanceWS(symbol, interval); else closeWS();
+    } catch (e) {
+      alert('加载失败: ' + (e && e.message ? e.message : e));
+    }
+  });
+
+  // ---------- 单图多 Pane：内置同一时间轴，天然对齐 ----------
+  // 使用一个 chart，增加 Pane 来放 RSI/MACD，时间刻度自动对齐
+  let rsiPane = null; let rsiSeries = null;
+  let macdPane = null; let macdLine = null; let sigLine = null; let histSeries = null;
+  let volPane = null; let volSeries = null;
+
+  function adjustPaneStretch() {
+    const panes = chart.panes();
+    if (panes.length === 1) { panes[0].setStretchFactor(1); return; }
+    const main = panes[0];
+    const hasRSI = !!rsiPane; const hasMACD = !!macdPane; const hasVOL = !!volPane;
+    let mainFactor = 0.6; let rest = 0.4;
+    const parts = (hasRSI?1:0) + (hasMACD?1:0) + (hasVOL?1:0);
+    const each = parts>0 ? rest/parts : 0;
+    main.setStretchFactor(mainFactor);
+    if (hasRSI) rsiPane.setStretchFactor(each);
+    if (hasMACD) macdPane.setStretchFactor(each);
+    if (hasVOL) volPane.setStretchFactor(each);
+  }
+
+  function ensurePaneOrder() {
+    // 希望体积(Vol)紧跟在主图后，其余顺序不变
+    if (!volPane) return;
+    const panes = chart.panes();
+    if (volPane.paneIndex() !== 1 && panes.length > 1) {
+      volPane.moveTo(1);
+    }
+  }
+  const mainTS = chart.timeScale();
+
+  // 懒加载副图：RSI / MACD（同图不同 pane）
+  function addRSI(){
+    if (rsiPane) return;
+    rsiPane = chart.addPane();
+    // 可根据需要调整高度占比
+    // rsiPane.setStretchFactor(0.6);
+    // 计算 RSI
+    let rsiVals;
+    try { rsiVals = (window.technicalindicators ? technicalindicators.RSI.calculate({period:14, values: closes}) : null); } catch(_) { rsiVals = null; }
+    if (!rsiVals) { // 简易 fallback
+      const p=14; rsiVals=[]; let gains=0,losses=0; for(let i=1;i<closes.length;i++){ const ch=closes[i]-closes[i-1]; gains+=Math.max(ch,0); losses+=Math.max(-ch,0); if(i>=p){ const prevCh=closes[i-p+1]-closes[i-p]; gains-=Math.max(prevCh,0); losses-=Math.max(-prevCh,0);} if(i>=p) { const rs=losses===0?100:(gains/p)/(losses/p); rsiVals.push(100-100/(1+rs)); }}
+    }
+    rsiSeries = rsiPane.addSeries(LightweightCharts.LineSeries,{ color:'yellow' });
+    rsiSeries.setData(rsiVals.map((v,i)=>({ time: times[i+14-1], value: v })));
+    // 与主图共享同一时间轴，无需额外同步
+    adjustPaneStretch();
+    ensurePaneOrder();
+  }
+  function removeRSI(){ if(!rsiPane) return; const idx = rsiPane.paneIndex(); chart.removePane(idx); rsiPane=null; rsiSeries=null; adjustPaneStretch(); }
+
+  function addMACD(){
+    if (macdPane) return;
+    macdPane = chart.addPane();
+    let macd;
+    try { macd = (window.technicalindicators ? technicalindicators.MACD.calculate({ values: closes, fastPeriod:12, slowPeriod:26, signalPeriod:9, SimpleMAOscillator:false, SimpleMASignal:false}) : null); } catch(_) { macd=null; }
+    if (!macd) {
+      function emaN(vals,p){ const k=2/(p+1); let e=vals[0]; const out=[e]; for(let i=1;i<vals.length;i++){ e=vals[i]*k + e*(1-k); out.push(e);} return out; }
+      const ema12=emaN(closes,12), ema26=emaN(closes,26).slice(0,ema12.length);
+      const macdLineArr = ema12.map((v,i)=> v - ema26[i]).slice(26-1);
+      const k=2/(9+1); let e=macdLineArr[0]; const signalArr=[e]; for(let i=1;i<macdLineArr.length;i++){ e=macdLineArr[i]*k + e*(1-k); signalArr.push(e);} 
+      macd = macdLineArr.map((v,i)=>({ MACD:v, signal: signalArr[i], histogram: v - signalArr[i] }));
+    }
+    macdLine = macdPane.addSeries(LightweightCharts.LineSeries,{ color:'lime' });
+    sigLine = macdPane.addSeries(LightweightCharts.LineSeries,{ color:'red' });
+    histSeries = macdPane.addSeries(LightweightCharts.HistogramSeries,{ color:'rgba(0,150,136,0.5)' });
+    macdLine.setData(macd.map((d,i)=>({ time: times[i+26-1], value: d.MACD })));
+    sigLine.setData(macd.map((d,i)=>({ time: times[i+26-1], value: d.signal })));
+    histSeries.setData(macd.map((d,i)=>({ time: times[i+26-1], value: d.histogram })));
+    // 同一时间轴，无需同步
+    adjustPaneStretch();
+    ensurePaneOrder();
+  }
+  function removeMACD(){ if(!macdPane) return; const idx = macdPane.paneIndex(); chart.removePane(idx); macdPane=null; macdLine=sigLine=histSeries=null; adjustPaneStretch(); }
+
+  function addVOL(){
+    if (volPane) return;
+    volPane = chart.addPane();
+    volSeries = volPane.addSeries(LightweightCharts.HistogramSeries, {
+      color: 'rgba(148, 163, 184, 0.6)',
+      priceLineVisible: false,
+      lastValueVisible: false,
+      priceFormat: { type: 'volume' },
+    });
+    const volData = ohlc.map(d => ({ time: d.time, value: d.volume, color: (d.close >= d.open) ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)' }));
+    volSeries.setData(volData);
+    ensurePaneOrder();
+    adjustPaneStretch();
+  }
+  function removeVOL(){ if(!volPane) return; const idx = volPane.paneIndex(); chart.removePane(idx); volPane=null; volSeries=null; adjustPaneStretch(); }
+  document.getElementById('rsiToggle').addEventListener('change', (e)=> e.target.checked ? addRSI() : removeRSI());
+  document.getElementById('macdToggle').addEventListener('change', (e)=> e.target.checked ? addMACD() : removeMACD());
+
+
+  // 基础自检日志，便于排查空图问题
+  logDebug('LC version?', window.LightweightCharts ? (typeof LightweightCharts.version === 'function' ? LightweightCharts.version() : LightweightCharts.version) : 'N/A');
+  logDebug('OHLC bars:', ohlc.length, 'first:', JSON.stringify(ohlc[0]));
+
+  // 需要副图时再添加，当前默认无副图
+  // 右侧留白输入 → 同步到 timeScale.rightOffset，并立即夹紧
+  document.getElementById('padInput').addEventListener('change', (e)=>{
+    const v = Math.max(0, Math.min(50, parseInt(e.target.value || '0', 10)));
+    rightPadBars = v;
+    chart.timeScale().applyOptions({ rightOffset: rightPadBars });
+    clampRightLimit();
+  });
+</script>
+</body>
+</html>

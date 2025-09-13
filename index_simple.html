@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>LC Minimal</title>
+  <script src="/node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { margin: 0; background: #0f172a; color: #e5e7eb; font-family: sans-serif; }
+    #c { height: 420px; }
+  </style>
+</head>
+<body>
+  <div id="info" style="position:fixed;left:8px;top:8px;color:#e5e7eb;background:rgba(0,0,0,.35);padding:4px 6px;border-radius:4px;font:12px/1.4 monospace;z-index:9999"></div>
+  <div id="c"></div>
+  <script>
+    function info(...a){ const el=document.getElementById('info'); el.textContent += (el.textContent?'\n':'') + a.join(' '); console.log(...a); }
+    const now = Math.floor(Date.now()/1000);
+    const data = [];
+    let p=100;
+    for(let i=0;i<50;i++){
+      const o=p; const c=o+(Math.random()-0.5)*4; const h=Math.max(o,c)+2; const l=Math.min(o,c)-2;
+      data.push({ time: now - (50-i)*86400, open:o, high:h, low:l, close:c });
+      p=c;
+    }
+    const chart = LightweightCharts.createChart(document.getElementById('c'),{ layout:{background:{color:'#0f172a'},textColor:'#eee'}, rightPriceScale:{borderColor:'#334155'}, timeScale:{borderColor:'#334155', timeVisible:true}});
+    const series = chart.addSeries(LightweightCharts.CandlestickSeries);
+    series.setData(data);
+    chart.timeScale().fitContent();
+    info('LC version', LightweightCharts.version, 'bars', data.length);
+  </script>
+</body>
+</html>
