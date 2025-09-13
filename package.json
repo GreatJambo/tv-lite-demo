@@ -4,17 +4,27 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "vite --config react/vite.config.ts",
+    "build:react": "vite build --config react/vite.config.ts",
+    "preview:react": "vite preview --config react/vite.config.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "devDependencies": {
-    "lite-server": "^2.6.1"
+    "@types/react": "^18.2.73",
+    "@types/react-dom": "^18.2.23",
+    "lite-server": "^2.6.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "@vitejs/plugin-react": "^4.3.1"
   },
   "dependencies": {
     "lightweight-charts": "^5.0.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "technicalindicators": "^3.1.0"
   }
 }
